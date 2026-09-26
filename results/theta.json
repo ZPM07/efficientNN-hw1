@@ -1,0 +1,90 @@
+{
+  "gpu": "NVIDIA GeForce GTX 1650",
+  "driver_cuda": "12.6",
+  "torch": "2.6.0+cu126",
+  "python": "3.12.4",
+  "total_gpu_memory_bytes": 4294508544,
+  "n_kernels_per_forward_equation": 23,
+  "latency": {
+    "P": 6114168484288.46,
+    "BW": 83592145990.5712,
+    "t_launch": 7.921799196464558e-05
+  },
+  "energy": {
+    "c0": 0.4638780187940598,
+    "c_f": 2.765860256445683e-09,
+    "c_b": -9.11725903938154e-08
+  },
+  "quality": {
+    "latency": {
+      "train_mape_pct": 14.78148362771233,
+      "validation_mape_pct": 16.537730724125993
+    },
+    "energy": {
+      "train_mape_pct": 11.663102989554547,
+      "validation_mape_pct": 9.743939440469674
+    },
+    "memory": {
+      "train_mape_pct": 44.23707588222889,
+      "validation_mape_pct": 38.122836311503725
+    },
+    "oom": {
+      "n_oom_rows": 0,
+      "n_predicted_oom_by_equation": 0
+    },
+    "wddm_spillover": {
+      "criterion": "suspected WDDM spillover: measured peak allocation > 2.5e+09 bytes (proxy; shared-memory usage itself was not measured)",
+      "configs": [
+        [
+          352,
+          256
+        ],
+        [
+          384,
+          256
+        ],
+        [
+          400,
+          167
+        ],
+        [
+          400,
+          256
+        ],
+        [
+          512,
+          98
+        ],
+        [
+          512,
+          128
+        ],
+        [
+          512,
+          167
+        ],
+        [
+          512,
+          256
+        ]
+      ],
+      "latency_mape_pct_excl_spillover": {
+        "train": 11.672330030008169,
+        "validation": 12.981284129192439
+      },
+      "energy_mape_pct_excl_spillover": {
+        "train": 9.088463543213152,
+        "validation": 6.874387237266758
+      }
+    }
+  },
+  "energy_effective_alt": {
+    "model": "E = c0 + P_idle*T + c_f*F + c_b*D (nnls, all coefficients >= 0)",
+    "c0_J": 0.025598095303526268,
+    "P_idle_W": 28.192377256514522,
+    "c_f_J_per_flop": 2.530015789808719e-11,
+    "c_b_J_per_byte": 0.0,
+    "mape_all_rows_pct": 10.5977278901286
+  },
+  "timestamp": "2026-09-26 13:16:16"
+}
