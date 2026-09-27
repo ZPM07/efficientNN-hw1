@@ -1,114 +1,114 @@
-# Homework 1 — Analytical performance model of a small CNN
+# Домашняя работа 1 — Аналитическая модель производительности небольшой CNN
 
-ITMO «Efficient Models» 2026 · HW1 · 5 points
+ИТМО · курс «Efficient Models» · 2026 · ДЗ-1 · 5 баллов
 
-Author: **Смирнов Василий Артурович** (Vasily Arturovich Smirnov)
-GPU used for all measurements: **NVIDIA GeForce GTX 1650 (TU117, 4 GB GDDR5, Turing, no tensor cores)**, driver 572.16 (CUDA-capable 12.8; the PyTorch build is cu126, so `torch.version.cuda` reports 12.6).
+Автор: **Смирнов Василий Артурович**
+GPU, на котором выполнены все измерения: **NVIDIA GeForce GTX 1650 (TU117, 4 ГБ GDDR5, Turing, без тензорных ядер)**, драйвер 572.16 (поддерживает CUDA 12.8; сборка PyTorch — cu126, поэтому `torch.version.cuda` показывает 12.6).
 
-## Repository layout
+## Состав репозитория
 
 ```
 hw1/
-├── README.md                # this file
-├── hw1_handwritten.pdf      # scanned hand-written Part 1 derivations
-├── models.py                # the assigned SmallCNN
+├── README.md                # этот файл
+├── hw1_handwritten.pdf      # отсканированный рукописный вывод формул (часть 1)
+├── models.py                # заданная SmallCNN
 ├── equations.py             # flops(), memory(), latency(), energy()  [+ bytes_moved()]
-├── measure.py               # Part 3 measurement protocol (grid, latency, memory, energy, OOM, kernels, --vram-cap)
-├── calibrate.py             # Part 4 fitting of theta (latency + energy) -> results/theta.json
-├── make_figures.py          # Part 5 plots -> results/figures/*.png
-├── pyproject.toml           # uv project (torch 2.6.0+cu126, numpy, pandas, scipy, matplotlib, nvidia-ml-py)
+├── measure.py               # часть 3: протокол измерений (сетка, латентность, память, энергия, OOM, ядра, --vram-cap)
+├── calibrate.py             # часть 4: подбор θ (латентность + энергия) -> results/theta.json
+├── make_figures.py          # часть 5: графики -> results/figures/*.png
+├── pyproject.toml           # uv-проект (torch 2.6.0+cu126, numpy, pandas, scipy, matplotlib, nvidia-ml-py)
 └── results/
-    ├── measurements.csv     # S, B, latency_s, memory_bytes, energy_J, is_validation ("OOM" rows supported)
-    ├── kernels.csv          # S, B, layer (record_function tag), CUDA kernel name (n/a on Windows: no CUPTI, see t_launch note)
-    ├── theta.json           # fitted parameters + quality metrics (+ suspected-spillover breakdown)
-    ├── measure_log.txt      # console log of the full run (UTF-16)
+    ├── measurements.csv     # S, B, latency_s, memory_bytes, energy_J, is_validation (строки "OOM" поддерживаются)
+    ├── kernels.csv          # S, B, слой (record_function-тег), имя CUDA-ядра (n/a на Windows: нет CUPTI, см. примечание к t_launch)
+    ├── theta.json           # подобранные параметры + метрики качества (+ разбор suspected-spillover)
+    ├── measure_log.txt      # консольный лог полного прогона (UTF-16)
     └── figures/*.png
 ```
 
-## How to reproduce
+## Как воспроизвести
 
 ```bash
-uv sync                                   # creates .venv, installs torch 2.6.0+cu126 etc.
-uv run python measure.py                  # ~30-40 min on a GTX 1650: full 132-config grid
-uv run python calibrate.py                # fits theta on train rows, validates on the rest
-uv run python make_figures.py             # all plots + parity/quality summary
-uv run python equations.py                # self-check of the closed-form formulas
+uv sync                                   # создаёт .venv, ставит torch 2.6.0+cu126 и т.д.
+uv run python measure.py                  # ~30–40 мин на GTX 1650: полная сетка из 132 конфигураций
+uv run python calibrate.py                # подбирает θ по train-строкам, валидирует на остальных
+uv run python make_figures.py             # все графики + сводка качества
+uv run python equations.py                # самопроверка замкнутых формул
 ```
 
-`measure.py --quick` runs a 9-config smoke test (~1 min).
-`measure.py --vram-cap 0.9` is an **artificial software-limit experiment**: the PyTorch caching allocator is capped at 90 % of VRAM, so allocations beyond the cap raise `torch.cuda.OutOfMemoryError`. An OOM row then means "above the cap", not necessarily "physical VRAM exhausted" (see the WDDM section).
+`measure.py --quick` — дымовой тест на 9 конфигурациях (~1 мин).
+`measure.py --vram-cap 0.9` — **искусственный программный лимит**: кэширующий аллокатор PyTorch ограничивается 90 % VRAM, и всё, что сверх лимита, кидает `torch.cuda.OutOfMemoryError`. Строка OOM тогда означает «выше лимита», а не обязательно «исчерпана физическая VRAM» (см. раздел про WDDM).
 
-**Environment of the measurement run:** Windows 10 Pro 22H2 (build 19045), Python 3.12.4, PyTorch 2.6.0+cu126 (`torch.version.cuda` = 12.6), NVIDIA driver 572.16, GTX 1650 4 GiB GDDR5.
+**Окружение измерительного прогона:** Windows 10 Pro 22H2 (сборка 19045), Python 3.12.4, PyTorch 2.6.0+cu126 (`torch.version.cuda` = 12.6), драйвер NVIDIA 572.16, GTX 1650 4 GiB GDDR5.
 
-**Grid reproducibility:** `measure.py` builds the grid with `np.random.default_rng(2026)`: base S = {32, 64, 128, 224, 256, 384, 512} plus 4 random multiples of 16 → **S = {48, 112, 352, 400}**; base B = {1, 2, 4, 8, 16, 32, 64, 128, 256} plus 3 random non-powers-of-two → **B = {95, 98, 167}**; full 11 × 12 = 132 cross product. Split rule: `is_validation = 1` for every row whose S is one of the four random sizes **or** whose B is one of the three random batches → **63 train / 69 validation rows**; `calibrate.py` fits only on the train rows.
+**Воспроизводимость сетки:** `measure.py` строит сетку через `np.random.default_rng(2026)`: базовые S = {32, 64, 128, 224, 256, 384, 512} плюс 4 случайных кратных 16 → **S = {48, 112, 352, 400}**; базовые B = {1, 2, 4, 8, 16, 32, 64, 128, 256} плюс 3 случайных не-степени двойки → **B = {95, 98, 167}**; полный кросс-продукт 11 × 12 = 132. Правило разбиения: `is_validation = 1` для каждой строки, у которой S — один из четырёх случайных размеров **или** B — один из трёх случайных батчей → **63 train / 69 validation**; `calibrate.py` обучается только на train-строках.
 
-## Model of the network (all conventions from the statement)
+## Модель сети (конвенции — из условия задания)
 
-- FLOPs: 1 MAC = 2 FLOPs; BN(eval) = 2 FLOPs/elem; ReLU = 1/elem; MaxPool = 0 FP-FLOPs (comparisons only: 8 compares × 2S² output elements/sample = 16·B·S² compares); GAP = (n−1 adds + 1 divide) per channel = 2S².
-- **FLOPs(S,B) = B·(17 777·S² + 313 600)** — closed form, no calibration; exact *under the stated counting convention* (1 MAC = 2 FLOPs, BN = 2/elem, ReLU = 1/elem, pool = 0), which is not a claim about the number of GPU instructions actually executed (cudnn may decompose a conv into im2col + GEMM, Winograd, etc.). Check: FLOPs(224,1) = 892 292 352; `equations.py` re-counts it by an independent layer-by-layer brute force.
-- **Memory(S,B) = 4·(1 045 316 + 19·B·S²)** bytes — ideal refcounting allocator *under the measurement convention*: the input tensor is alive during the whole forward (the caller holds a reference), so the peak stage is the first BatchNorm — network input 3S² + BN input 8S² + BN output 8S² = 19S² floats per sample. GAP output and logits appear later and never coexist with this peak, so they are not added. cuDNN workspaces are allocated through the PyTorch caching allocator (they *do* count in `max_memory_allocated`), so the equation is a *systematic lower bound*.
-- **Bytes moved** = Σ(read input + write output) + weights read once = `4·(133·B·S² + 2 148·B + 1 045 316)` — an estimate of the **logical traffic** (every tensor touched once), not literal DRAM traffic: weights/activations can stay in cache across ops and iterations, and a conv may re-read its input.
-- **Latency** (calibrated): `T = Σ_ops max(flops_op/P, bytes_op/BW) + 23·t_launch` — a per-op roofline. P, BW, t_launch are **effective** parameters (see below); N = 23 launches is an assumption (one kernel per high-level op), and only the product N·t_launch ≈ 1.82 ms is identified.
-- **Energy** (calibrated): `E = c0 + c_f·FLOPs + c_b·Bytes` [J] — an affine regression; the coefficients are **effective** (FLOPs and Bytes are collinear, r = 1.000), not physical per-flop/per-byte costs.
+- FLOPs: 1 MAC = 2 FLOPs; BN(eval) = 2 FLOPs/эл.; ReLU = 1/эл.; MaxPool = 0 FP-FLOPs (только сравнения: 8 сравнений × 2S² элементов выхода на сэмпл = 16·B·S² сравнений); GAP = (n−1 сложений + 1 деление) на канал = 2S².
+- **FLOPs(S,B) = B·(17 777·S² + 313 600)** — замкнутая форма, без калибровки; точна *в рамках принятой конвенции подсчёта* (1 MAC = 2 FLOPs, BN = 2/эл., ReLU = 1/эл., pool = 0), что не есть утверждение о числе реально исполняемых инструкций GPU (cudnn может разложить свёртку на im2col + GEMM, Winograd и т.п.). Проверка: FLOPs(224,1) = 892 292 352; `equations.py` пересчитывает это независимым послойным brute-force.
+- **Memory(S,B) = 4·(1 045 316 + 19·B·S²)** байт — идеальный аллокатор со счётом ссылок *в рамках конвенции измерения*: входной тензор живёт весь forward (вызывающий код держит ссылку), поэтому стадия пика — первая BatchNorm: вход сети 3S² + вход BN 8S² + выход BN 8S² = 19S² float на сэмпл. Выход GAP и логиты появляются позже и с пиком не пересекаются, поэтому не прибавляются. Workspace cuDNN выделяется через кэширующий аллокатор PyTorch (он *учитывается* в `max_memory_allocated`), поэтому уравнение — *систематическая нижняя граница*.
+- **Bytes moved** = Σ(чтение входа + запись выхода) + веса один раз = `4·(133·B·S² + 2 148·B + 1 045 316)` — оценка **логического трафика** (каждый тензор трогается один раз), а не буквальный трафик DRAM: веса и активации могут оставаться в кэше между операциями и итерациями, а свёртка может читать вход несколько раз.
+- **Латентность** (калибруется): `T = Σ_ops max(flops_op/P, bytes_op/BW) + 23·t_launch` — пооператорный руфлайн. P, BW, t_launch — **эффективные** параметры (см. ниже); N = 23 запуска — допущение (одно ядро на операцию), идентифицируем только продукт N·t_launch ≈ 1.82 мс.
+- **Энергия** (калибруется): `E = c0 + c_f·FLOPs + c_b·Bytes` [Дж] — аффинная регрессия; коэффициенты **эффективные** (FLOPs и Bytes коллинеарны, r = 1.000), а не физические стоимости на flop/байт.
 
-### Measurement protocol
-`torch.backends.cudnn.benchmark=False`, `cudnn.allow_tf32=False`, `matmul.allow_tf32=False`, `model.eval()`, `torch.inference_mode()`, FP32, random tensors.
-Latency = median of 20 CUDA-event timed forwards (5 warmup). Memory = `max_memory_allocated()` after `reset_peak_memory_stats()` (the live input counts, since the caller holds it). Energy = NVML **energy counter** (mJ) around a ≈1.5 s window of back-to-back forwards, divided by the iteration count (fallback: integrate `power_usage` at 100 Hz). OOM rows are caught and recorded as `OOM`.
+### Протокол измерений
+`torch.backends.cudnn.benchmark=False`, `cudnn.allow_tf32=False`, `matmul.allow_tf32=False`, `model.eval()`, `torch.inference_mode()`, FP32, случайные тензоры.
+Латентность = медиана 20 прогонов, синхронизированных CUDA-событиями (5 прогревочных). Память = `max_memory_allocated()` после `reset_peak_memory_stats()` (живой вход учитывается — на него есть ссылка в вызывающем коде). Энергия = **счётчик энергии NVML** (мДж) вокруг окна ≈1.5 с непрерывных forward'ов, делённый на число итераций (резервный способ: интегрирование `power_usage` на 100 Гц). OOM ловится и записывается как `OOM`.
 
-## Fitted parameters (GTX 1650)
+## Подобранные параметры (GTX 1650)
 
-All θ are **effective parameters** fitted to the measurements: they absorb the model's simplifications and are correlated with each other — they are not separately identifiable hardware constants.
+Все θ — **эффективные параметры**, подобранные по измерениям: они поглощают упрощения модели и коррелируют между собой — это не отдельно идентифицируемые аппаратные константы.
 
-| θ | value | meaning |
+| θ | значение | смысл |
 |---|-------|---------|
-| P | **6.11·10¹² flop/s** | effective FP32-throughput parameter — 2.05× the hardware peak (896 cores × 2 × 1.665 GHz ≈ 2.98 TFLOP/s); it compensates the additive per-op roofline. Clamping P to the peak refits BW to 214 GB/s at the same accuracy → (P, BW) are not identifiable separately |
-| BW | **83.6 GB/s** | effective bandwidth parameter (spec 128 GB/s; the fit lands below spec because the byte model overcounts DRAM traffic — L2 hits are not modelled) |
-| t_launch | **79.2 µs** | per-kernel launch overhead under WDDM; with the N = 23 assumption this gives a floor of 23·t_launch ≈ **1.82 ms** (only the product is identified; the real kernel count was not verifiable — no CUPTI on Windows) |
-| c0 | **0.464 J** | regression intercept, *not* a physical constant: the effective fixed term c0 + c_b·(weights) ≈ **0.083 J** is what matches the measured small-workload energy |
-| c_f | **2.77 nJ/flop** | effective — ~20–80× the physical J/flop implied by the measurements (≈0.03–0.14 nJ/flop); inflated by the collinearity with the Bytes term |
-| c_b | **−91.2 nJ/byte** (−9.12·10⁻⁸ J/byte) | negative — a collinearity artifact (r = 1.000 between FLOPs and Bytes on this grid); the combination still predicts validation energy with 9.7 % MAPE |
+| P | **6.11·10¹² flop/s** | эффективный параметр FP32-производительности — в 2.05 раза выше аппаратного пика (896 ядер × 2 × 1.665 ГГц ≈ 2.98 TFLOP/s); компенсирует аддитивность пооператорного руфлайна. Зажимание P до пика перефитит BW в 214 ГБ/с при той же точности → (P, BW) по отдельности неидентифицируемы |
+| BW | **83.6 ГБ/с** | эффективный параметр пропускной способности (спека 128 ГБ/с; фит ниже спеки, потому что байтовая модель переоценивает DRAM-трафик — попадания в L2 не моделируются) |
+| t_launch | **79.2 мкс** | накладные расходы запуска ядра под WDDM; с допущением N = 23 это даёт пол 23·t_launch ≈ **1.82 мс** (идентифицируем только продукт; реальное число ядер проверить не удалось — нет CUPTI на Windows) |
+| c0 | **0.464 Дж** | свободный член регрессии, *не* физическая константа: эффективный постоянный член c0 + c_b·(веса) ≈ **0.083 Дж** — именно он совпадает с измеренной энергией малых нагрузок |
+| c_f | **2.77 нДж/flop** | эффективный — в ~20–80 раз больше физического Дж/flop, следующего из измерений (≈0.03–0.14 нДж/flop); завышен коллинеарностью с членом Bytes |
+| c_b | **−91.2 нДж/байт** (−9.12·10⁻⁸ Дж/байт) | отрицательный — артефакт коллинеарности (r = 1.000 между FLOPs и Bytes на этой сетке); комбинация всё равно предсказывает энергию валидации с MAPE 9.7 % |
 
-Non-negative alternative (reported by `calibrate.py`): `E = c0 + P_idle·T + c_f·F + c_b·D` fitted with coefficients constrained ≥ 0 → P_idle ≈ **28.2 W**, c_f ≈ **0.025 nJ/flop**, c_b = 0, c0 ≈ 0.026 J; MAPE 10.6 % on all rows — comparable accuracy with sane signs and magnitudes. Non-negativity is a useful constraint, not a proof of physical meaning: these are still fitted (effective) values.
+Альтернатива с неотрицательными коэффициентами (её отчёт выдаёт `calibrate.py`): `E = c0 + P_idle·T + c_f·F + c_b·D` с ограничением коэффициентов ≥ 0 → P_idle ≈ **28.2 Вт**, c_f ≈ **0.025 нДж/flop**, c_b = 0, c0 ≈ 0.026 Дж; MAPE 10.6 % на всех строках — сопоставимая точность с осмысленными знаками и порядками величин. Неотрицательность — полезное ограничение, но не доказательство физического смысла: это всё равно подобранные (эффективные) значения.
 
-Quality (MAPE, %): **latency train 14.8 / validation 16.5**; **energy train 11.7 / validation 9.7**; **memory (analytical lower bound) train 44.2 / validation 38.1**. Excluding the **8 suspected-WDDM-spillover configs** (measured peak allocation > 2.5 GB; see the WDDM section): latency **11.7 / 13.0**, energy **9.1 / 6.9**. Measured/ideal memory ratio: median **1.60×** (p10 1.21, p90 3.21).
+Качество (MAPE, %): **латентность train 14.8 / validation 16.5**; **энергия train 11.7 / validation 9.7**; **память (аналитическая нижняя граница) train 44.2 / validation 38.1**. Без **8 конфигов, подозреваемых в WDDM-spillover** (измеренный пик аллокаций > 2.5 ГБ; см. раздел про WDDM): латентность **11.7 / 13.0**, энергия **9.1 / 6.9**. Отношение измеренное/идеал по памяти: медиана **1.60×** (p10 1.21, p90 3.21).
 
-## Figures
+## Графики
 
-Every plot shows the measured points together with the model prediction (train and validation points distinguished), with labelled axes and units.
+Каждый график показывает измеренные точки вместе с предсказанием модели (train и validation различаются), оси подписаны с единицами измерения.
 
-| Figure | What it shows |
+| График | Что показывает |
 |---|---|
-| [`latency_vs_S.png`](results/figures/latency_vs_S.png) | measured vs predicted latency: curves vs S for B ∈ {1, 8, 32, 128} + predicted (S, B) surface, seconds |
-| [`latency_parity.png`](results/figures/latency_parity.png) | predicted vs measured latency parity, log-log (ms), train/validation MAPE in the title |
-| [`regimes.png`](results/figures/regimes.png) | left: launch / memory / compute components of the model at B=32; right: analytical FLOPs ÷ measured latency (achieved TFLOP/s) vs workload with the calibrated P — the FLOPs-side check |
-| [`memory.png`](results/figures/memory.png) | peak memory: ideal-allocator prediction vs measured `max_memory_allocated` (MB) + parity plot |
-| [`energy.png`](results/figures/energy.png) | energy per forward vs S (J) + log-log parity |
-| [`oom_boundary.png`](results/figures/oom_boundary.png) | memory-feasibility map: where the equation exceeds VRAM, with measured ok/OOM points |
+| [`latency_vs_S.png`](results/figures/latency_vs_S.png) | измеренная и предсказанная латентность: кривые по S при B ∈ {1, 8, 32, 128} + предсказанная поверхность (S, B), секунды |
+| [`latency_parity.png`](results/figures/latency_parity.png) | parity-график «предсказано против измерено» для латентности, log-log (мс), MAPE train/validation в заголовке |
+| [`regimes.png`](results/figures/regimes.png) | слева: компоненты модели «запуски / память / вычисления» при B=32; справа: аналитические FLOPs ÷ измеренная латентность (достигнутые TFLOP/s) против нагрузки с калиброванным P — проверка со стороны FLOPs |
+| [`memory.png`](results/figures/memory.png) | пиковая память: предсказание идеального аллокатора против измеренного `max_memory_allocated` (МБ) + parity-график |
+| [`energy.png`](results/figures/energy.png) | энергия на forward по S (Дж) + parity в log-log |
+| [`oom_boundary.png`](results/figures/oom_boundary.png) | карта осуществимости по памяти: где уравнение превышает VRAM, с измеренными точками ok/OOM |
 
-## Results summary and 1-page discussion
+## Сводка результатов и обсуждение (1 страница)
 
-132 configurations (11 sizes × 12 batches), **0 OOM rows** — on this Windows/WDDM box the driver silently pages oversized allocations into shared system memory instead of failing (why, and how to get real OOM rows: see *Windows/WDDM and OOM* below). Four findings:
+132 конфигурации (11 размеров × 12 батчей), **0 строк OOM** — на этой машине с Windows/WDDM драйвер молча выгружает слишком большие аллокации в системную память вместо того, чтобы упасть с ошибкой (почему, и как получить настоящие строки OOM — см. *Windows/WDDM и OOM* ниже). Четыре вывода:
 
-1. **Performance regimes** (`regimes.png`, `latency_vs_S.png`): at small B·S² the 23 fixed launches dominate (measured floor ≈ 1.8–2.7 ms ≈ 23·t_launch); at mid sizes the summed `bytes/BW` terms win; the largest workloads push the 4 big convolutions to the compute side. The other 19 ops stay memory-bound at every (S, B), and since both FLOPs and Bytes scale as B·S², the aggregate log-log slope stays ≈ 2 — the crossover changes which term dominates, not the growth law. Achieved throughput saturates at ≈ 2.1 TFLOP/s (vs ≈ 3.0 TFLOP/s hardware peak) and drops on the suspected-spillover configs.
-2. **Memory equation is a parallel lower bound** (`memory.png`): measured/ideal = 1.21–3.21× (median 1.60×) — cuDNN workspaces are allocated through the caching allocator (so they *are* counted in `max_memory_allocated`) and blocks are rounded up; the gap grows with S·B (wider-workspace algorithms for bigger tiles). The 19·B·S² law itself matches the ideal tensor lifecycle (live input included).
-3. **Energy is affine in work and validates the best of the four** (`energy.png`, 9.7 % MAPE, parity within ~10 % over 3 decades). FLOPs and Bytes are collinear on this grid (r = 1.000), so c_f and c_b are regression artifacts (c_b < 0): no physical compute/DRAM split can be read off them. At small workloads the effective fixed term ≈ 0.083 J makes the energy per forward nearly independent of (S, B).
-4. **Where it breaks:** the 8 suspected-spillover configs carry the largest errors — per-config latency 39–84 %, energy 25–73 % (six of the eight exceed 69 % latency error) — and dominate the MAPE budget; excluding them, latency drops to 11.7/13.0 % and energy to 9.1/6.9 %. The remaining error budget: noisy WDDM launch overhead at B=1; kernel-choice step-changes under `cudnn.benchmark=False`; NVML board energy including the Windows desktop (~10 % scatter); the memory bound predicting scale rather than the exact OOM point.
+1. **Режимы производительности** (`regimes.png`, `latency_vs_S.png`): при малых B·S² доминируют 23 фиксированных запуска ядер (измеренный пол ≈ 1.8–2.7 мс ≈ 23·t_launch); на средних размерах побеждает сумма членов `bytes/BW`; самые крупные нагрузки выводят 4 большие свёртки на вычислительную сторону. Остальные 19 операций остаются memory-bound при всех (S, B), и поскольку и FLOPs, и Bytes растут как B·S², совокупный наклон в log-log остаётся ≈ 2 — переход меняет доминирующий член, а не закон роста. Достигнутая производительность насыщается на ≈ 2.1 TFLOP/s (против ≈ 3.0 TFLOP/s аппаратного пика) и падает на конфигах, подозреваемых в spillover.
+2. **Уравнение памяти — параллельная нижняя граница** (`memory.png`): измеренное/идеальное = 1.21–3.21× (медиана 1.60×) — workspace cuDNN выделяется через кэширующий аллокатор (то есть *учитывается* в `max_memory_allocated`), блоки округляются вверх; разрыв растёт с S·B (более широкие workspace-алгоритмы для больших тайлов). Сам закон 19·B·S² соответствует идеальному жизненному циклу тензоров (включая живой вход).
+3. **Энергия аффинна по работе и валидируется лучше всех четырёх** (`energy.png`, MAPE 9.7 %, parity в пределах ~10 % на три порядка). FLOPs и Bytes коллинеарны на этой сетке (r = 1.000), поэтому c_f и c_b — артефакты регрессии (c_b < 0): физического разложения «вычисления против DRAM» с них считать нельзя. При малых нагрузках эффективный постоянный член ≈ 0.083 Дж делает энергию на forward почти не зависящей от (S, B).
+4. **Где модель ломается:** самые большие ошибки несут 8 конфигов, подозреваемых в spillover, — по-конфигно латентность 39–84 %, энергия 25–73 % (у шести из восьми ошибка латентности выше 69 %) — они и доминируют в бюджете MAPE; без них латентность падает до 11.7/13.0 %, энергия — до 9.1/6.9 %. Остальная часть бюджета ошибок: шумные накладные расходы запуска под WDDM при B=1; ступенчатые смены ядер при `cudnn.benchmark=False`; энергия всей платы по NVML включает рабочий стол Windows (~10 % разброс); нижняя граница памяти предсказывает масштаб, а не точную точку OOM.
 
-## Windows/WDDM and OOM
+## Windows/WDDM и OOM
 
-By default the NVIDIA driver on Windows silently spills CUDA allocations that do not fit in VRAM into shared system memory: no `OutOfMemoryError` is raised, the affected configs just slow down. **Actual shared-GPU-memory usage was not measured**: the 8 configs with measured peak allocation > 2.5 GB ((352,256), (384,256), (400,167), (400,256), (512,98), (512,128), (512,167), (512,256)) are flagged as *suspected* WDDM-spillover — the observable symptom being that they run 1.6–6.2× slower than the roofline ((512,256): measured 3.25 s vs 0.52 s predicted; there the equation gives 5.1 GB > 4 GiB VRAM and the measured peak is 6.2 GB).
+По умолчанию драйвер NVIDIA на Windows молча выгружает CUDA-аллокации, не влезающие в VRAM, в системную память: `OutOfMemoryError` не возникает, страдает только скорость. **Фактическое использование общей памяти GPU не измерялось**: 8 конфигураций с измеренным пиком аллокаций > 2.5 ГБ ((352,256), (384,256), (400,167), (400,256), (512,98), (512,128), (512,167), (512,256)) помечены как *подозреваемые* в WDDM-spillover — наблюдаемый симптом: они в 1.6–6.2× медленнее руфлайна ((512,256): измерено 3.25 с против 0.52 с предсказанных; там уравнение даёт 5.1 ГБ > 4 GiB VRAM при измеренном пике 6.2 ГБ).
 
-**Why:** under WDDM the OS video-memory manager (VidMm) treats VRAM as a *paged* surface — a CUDA allocation is a WDDM resource that the OS can migrate between VRAM and system memory, and the driver's CUDA sysmem fallback (default policy on GeForce, driver ≥ 536.40) places allocations in shared system memory instead of failing (the Task-Manager counter is "Shared GPU memory"). This GPU also drives the display, and GeForce cards cannot switch to TCC — the Windows driver mode with dedicated, non-paged memory and honest OOM. The price of a spilled page is a PCIe transfer (~12–15 GB/s here vs 128 GB/s GDDR5) plus residency-management overhead — exactly the observed 1.6–6.2× slowdowns. Definitive proof would be sampling shared-GPU-memory usage during a (512,256) run (Task Manager / the `GPU Process Memory` performance counter); we did not measure it, hence *suspected*.
+**Почему:** под WDDM менеджер видеопамяти ОС (VidMm) трактует VRAM как *страничную* поверхность — аллокация CUDA есть WDDM-ресурс, который ОС может мигрировать между VRAM и системной памятью, а sysmem fallback драйвера CUDA (политика по умолчанию на GeForce, драйвер ≥ 536.40) размещает аллокации в общей системной памяти вместо ошибки (счётчик в Диспетчере задач — «Общая память GPU»). Этот GPU к тому же обслуживает дисплей, а карты GeForce не могут переключиться в TCC — режим драйвера Windows с выделенной непейджируемой памятью и «честными» OOM. Цена вытесненной страницы — пересылка по PCIe (~12–15 ГБ/с здесь против 128 ГБ/с у GDDR5) плюс накладные расходы управления резидентностью — ровно наблюдаемые замедления 1.6–6.2×. Окончательное доказательство — замер использования общей памяти GPU во время прогона (512,256) (Диспетчер задач / счётчик производительности `GPU Process Memory`); мы его не делали, поэтому статус — *подозреваемые*.
 
-About the "4.3 GB" VRAM wall in `oom_boundary.png`: that line is `torch.cuda.get_device_properties(0).total_memory` = 4 294 508 544 bytes = 4.00 GiB (marketed "4 GB"; the same number is ≈ 4.29 in decimal GB). Real paging starts *before* the equation crosses this line, because the Windows desktop shares the same 4 GiB.
+Про «стену 4.3 ГБ» на `oom_boundary.png`: эта линия — `torch.cuda.get_device_properties(0).total_memory` = 4 294 508 544 байт = 4.00 GiB (маркетинговые «4 ГБ»; в десятичных гигабайтах это ≈ 4.29). Реальная выгрузка начинается *раньше*, чем уравнение пересекает эту линию: рабочий стол Windows делит те же 4 GiB.
 
-Two ways to obtain real OOM rows for the assignment's OOM-comparison requirement:
+Два способа получить настоящие строки OOM для требуемого в задании сравнения с уравнением памяти:
 
-1. `uv run python measure.py --vram-cap 0.9` — an **artificial software-limit experiment**: the PyTorch caching allocator is capped at 90 % of VRAM, and allocations beyond the cap raise `torch.cuda.OutOfMemoryError`. An OOM row then means "above the cap", not necessarily physical-VRAM exhaustion (and the recorded `memory_bytes` never exceeds the cap).
-2. NVIDIA Control Panel → Manage 3D Settings → **CUDA - Sysmem Fallback Policy → Prefer No Sysmem Fallback** (driver ≥ 536.40; this box runs 572.16) — the driver refuses the allocation instead of spilling, so OOM reflects the real available VRAM.
+1. `uv run python measure.py --vram-cap 0.9` — **искусственный эксперимент с программным лимитом**: кэширующий аллокатор PyTorch ограничен 90 % VRAM, аллокации сверх лимита кидают `torch.cuda.OutOfMemoryError`. Строка OOM означает «выше лимита», а не обязательно исчерпание физической VRAM (и записанный `memory_bytes` никогда не превысит лимит).
+2. Панель управления NVIDIA → Управление параметрами 3D → **CUDA - Sysmem Fallback Policy → Prefer No Sysmem Fallback** (драйвер ≥ 536.40; здесь 572.16) — драйвер отказывает в аллокации вместо выгрузки, и OOM отражает реально доступную VRAM.
 
-The cleanest OOM data still comes from Linux/Colab (T4), where the paging path does not exist.
+Самые чистые данные OOM всё равно даёт Linux/Colab (T4), где пути выгрузки в системную память нет.
 
-## Note on hw1_handwritten.pdf
+## Примечание к hw1_handwritten.pdf
 
-`hw1_handwritten.pdf` is the scanned hand-written Part 1 derivation (3 pages): the four closed-form functions with the layer tables, the peak-memory argument, and the explicitly stated assumptions (A1–A6 for latency, E1–E3 for energy). The numbers are those of the analytical model in this README, reproduced exactly by `equations.py` (FLOPs(224,1) = 892 292 352; weights + BN buffers = 1 045 316 floats; traffic 133·S² + 2 148 per sample).
+`hw1_handwritten.pdf` — отсканированный рукописный вывод части 1 (3 страницы): четыре замкнутые формулы с таблицами слоёв, аргументация пика памяти и явно выписанные допущения (A1–A6 для латентности, E1–E3 для энергии). Числа — те же, что в аналитической модели этого README, в точности воспроизводимой `equations.py` (FLOPs(224,1) = 892 292 352; веса + буферы BN = 1 045 316 float; трафик 133·S² + 2 148 на сэмпл).
