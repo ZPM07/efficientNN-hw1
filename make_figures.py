@@ -229,6 +229,17 @@ def main():
     om = df[df.status == "OOM"]
     if len(om):
         ax.scatter(om.S, om.B, s=18, marker="x", color="k", label="measured OOM")
+    # OOM rows recorded under the artificial --vram-cap 0.9 experiment
+    # (results/measurements_vramcap.csv, if present)
+    if os.path.exists("results/measurements_vramcap.csv"):
+        dvc = pd.read_csv("results/measurements_vramcap.csv")
+        ovc = dvc[dvc["latency_s"].astype(str) == "OOM"]
+        # dashed line: the 0.9xVRAM software cap used by that experiment
+        ax.contour(SS, BB, P, levels=[vram * 0.9], colors="darkred",
+                   linewidths=1.2, linestyles="--")
+        if len(ovc):
+            ax.scatter(ovc.S, ovc.B, s=30, marker="v", color="darkred",
+                       label=f"OOM under --vram-cap 0.9 ({len(ovc)})")
     ax.set(xlabel="image size S (px)", ylabel="batch B",
            title=f"Memory feasibility: green = equation < {vram/1000:.1f} GB VRAM")
     ax.legend()
